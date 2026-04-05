@@ -1,0 +1,260 @@
+{
+  "name": "PDF Renamer - Local (Corrigé v2)",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "3f236da3-2cb0-4799-869a-46c388f0a460",
+        "formTitle": "PDF Renommer",
+        "formDescription": "Entrez le chemin absolu du dossier contenant vos PDFs",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Chemin du dossier",
+              "placeholder": "Ex: /home/andreas/pdfs ou C:\\Users\\Andreas\\PDFs",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4ba00d32-b737-47f1-8ac4-2565438ba6e2",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2,
+      "position": [
+        4144,
+        720
+      ],
+      "webhookId": "3f236da3-2cb0-4799-869a-46c388f0a460"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst folderPath = $input.first().json['Chemin du dossier'].trim();\n\nif (!fs.existsSync(folderPath)) {\n  throw new Error('Dossier introuvable : ' + folderPath);\n}\n\nconst files = fs.readdirSync(folderPath)\n  .filter(f => f.toLowerCase().endsWith('.pdf'))\n  .map(f => ({\n    fileName: f,\n    originalPath: path.join(folderPath, f),\n    folderPath: folderPath\n  }));\n\nif (files.length === 0) {\n  throw new Error('Aucun fichier PDF trouvé dans : ' + folderPath);\n}\n\nreturn files.map(f => ({ json: f }));"
+      },
+      "id": "ff165654-bcfa-47f0-881a-9259031f4af8",
+      "name": "Lire les PDFs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4592,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst items = $input.all();\n\nfor (const item of items) {\n  const filePath = item.json.originalPath;\n  const fileBuffer = fs.readFileSync(filePath);\n  item.binary = {\n    data: await this.helpers.prepareBinaryData(fileBuffer, item.json.fileName, 'application/pdf')\n  };\n}\n\nreturn items;"
+      },
+      "id": "f9d7ef16-7d8f-4730-a5c5-8ddeaf297182",
+      "name": "Charger PDF en binaire",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4816,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "d5610736-468a-4da5-bb87-edfc1e5eb1ac",
+      "name": "Extraire Texte PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        5040,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const text = item.json.text || '';\n  const preview = text.substring(0, 1500).replace(/\\n/g, ' ');\n  return {\n    json: {\n      ...item.json,\n      textPreview: preview\n    }\n  };\n});"
+      },
+      "id": "701604a1-5239-412a-9d9a-90eb37ff4f92",
+      "name": "Préparer pour Ollama",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5264,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tu es un automate de renommage de fichiers. Tu ne dis ni bonjour, ni merci. Tu génères un nom court avec des underscores.\n\nEXEMPLES :\nTexte : \"Candidature au poste de vendeur électricité/plomberie du 05/01/2025\"\nRéponse attendue : Candidature_Vendeur_05012025\n\nTexte : \"Facture internet Free mois de Mars 2024\"\nRéponse attendue : Facture_Free_Mars_2024\n\nA TON TOUR. Ne fais aucune phrase. Ne mets pas \"Nature :\" ou \"Sujet :\". Donne juste le nom.\n\nTexte à analyser : {{ $json.textPreview }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        5488,
+        720
+      ],
+      "id": "0e72b8d9-28ac-4fbf-ae13-d27907588c08",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "const path = require('path');\nconst items = $input.all();\n\nreturn items.map(item => {\n  let rawPath = item.json['Chemin du dossier'];\n  \n  if (rawPath) {\n    // path.normalize() convertit automatiquement les / en \\ sur Windows et inversement sur Linux !\n    item.json['Chemin du dossier'] = path.normalize(rawPath.trim());\n  }\n  \n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4368,
+        720
+      ],
+      "id": "dbc5d912-5edc-4d74-9209-fca1ee31c3e5",
+      "name": "Nettoyage"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst os = require('os');\n\nconst items = $input.all();\nconst originalItems = $('Lire les PDFs').all();\n\nreturn items.map((item, index) => {\n  try {\n    let response = item.json.output || item.json.response || '';\n    \n    // 1. On retire le bloc de réflexion (au cas où tu repasses sur Qwen)\n    if (response.includes('</think>')) {\n      response = response.split('</think>')[1];\n    }\n    \n    // 2. NOUVEAUTÉ : On efface les mots parasites que Llama adore rajouter\n    response = response.replace(/(Nature exacte|Nature|Sujet principal|Sujet|Date)\\s*:/gi, ' ');\n    \n    // 3. On nettoie tout pour faire un nom de fichier parfait\n    let cleanName = 'document_sans_nom';\n    if (response && typeof response === 'string') {\n      cleanName = response\n        .trim()\n        .replace(/[^a-zA-Z0-9_\\-àâäéèêëîïôùûüç]/g, '_') // Remplace ce qui n'est pas alphanumérique par des _\n        .replace(/_+/g, '_') // Supprime les underscores multiples\n        .replace(/^_|_$/g, '') // Enlève les underscores au début et à la fin\n        .substring(0, 80); // Limite à 80 caractères\n    }\n    \n    if (!cleanName || cleanName.length < 3) {\n       cleanName = 'document_sans_nom_' + Math.floor(Math.random() * 1000);\n    }\n\n    // 4. Vérification de sécurité\n    if (!originalItems[index] || !originalItems[index].json.originalPath) {\n      throw new Error(`Données d'origine introuvables pour l'élément ${index + 1}.`);\n    }\n\n    const originalPath = originalItems[index].json.originalPath;\n    const folderPath = originalItems[index].json.folderPath;\n\n    // 5. Construction et renommage\n    const newName = cleanName + '.pdf';\n    const sep = os.platform() === 'win32' ? '\\\\\\\\' : '/';\n    const newPath = folderPath.replace(/[\\\\/\\\\\\\\]+$/, '') + sep + newName;\n\n    let finalPath = newPath;\n    if (fs.existsSync(newPath)) {\n      const timestamp = Date.now() + Math.floor(Math.random() * 1000);\n      finalPath = newPath.replace('.pdf', '_' + timestamp + '.pdf');\n    }\n\n    fs.renameSync(originalPath, finalPath);\n\n    return {\n      json: {\n        status: '✅ Renommé avec succès',\n        ancienChemin: originalPath,\n        nouveauChemin: finalPath,\n        nomFichier: newName\n      }\n    };\n\n  } catch (error) {\n    return {\n      json: {\n        status: '❌ Erreur',\n        erreur: error.message\n      }\n    };\n  }\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5840,
+        720
+      ],
+      "id": "fe7ee16a-43f2-4d73-acf2-e30de303849b",
+      "name": "Rename PDF"
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        5568,
+        944
+      ],
+      "id": "3c3e0085-4aed-4b19-b33c-e194350abe3a",
+      "name": "llama3.2:3B",
+      "credentials": {
+        "ollamaApi": {
+          "id": "k4cU763VAVsuUARl",
+          "name": "Ollama account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Nettoyage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lire les PDFs": {
+      "main": [
+        [
+          {
+            "node": "Charger PDF en binaire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Charger PDF en binaire": {
+      "main": [
+        [
+          {
+            "node": "Extraire Texte PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraire Texte PDF": {
+      "main": [
+        [
+          {
+            "node": "Préparer pour Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer pour Ollama": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Rename PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nettoyage": {
+      "main": [
+        [
+          {
+            "node": "Lire les PDFs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rename PDF": {
+      "main": [
+        []
+      ]
+    },
+    "llama3.2:3B": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e0c39c22-61a5-4826-9f4d-8689a068a80d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "126d2c055e6a43092056d19c9bd0be6314a496a18ae6bbd194040904d2375672"
+  },
+  "id": "29EQ7FsW0EMxwCIR",
+  "tags": [
+    {
+      "name": "PDF",
+      "id": "ckEetUvdmLpnmMtc",
+      "updatedAt": "2026-04-05T12:25:34.679Z",
+      "createdAt": "2026-04-05T12:25:34.679Z"
+    }
+  ]
+}
